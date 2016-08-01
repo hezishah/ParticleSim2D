@@ -20,3 +20,5 @@ namespace std
     clamp(double value, double min, double max);
 }
 
+
+

@@ -2,8 +2,7 @@
 #include "StringUtil.h"
 
 #include <cstdlib>
-#include <stdexcept>
-#include <cfloat>   // FLT_MAX
+#include <cfloat>   // DBL_MAX
 #include <cmath>    // std::nextafter
 #include <algorithm>
 
@@ -51,4 +50,3 @@ clamp(double value, double min, double max)
 {
     return std::min(std::max(min, value), max);
 }
-
