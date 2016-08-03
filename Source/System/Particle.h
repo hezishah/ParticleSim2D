@@ -11,11 +11,13 @@ private:
     Texture* texture;
     float lifetime;
     float gravity;
+	bool fade;
+	double alpha;
 
 public:
     Particle(Texture* texture);
     Particle(const Particle& other);
-    Particle(Texture* texture, const Vector2& position, const Vector2& velocity, float lifetime = 10, float gravity = 9.8);
+	Particle(Texture* texture, const Vector2& position, const Vector2& velocity, float lifetime = 10, float gravity = 9.8, bool fade = false);
     
     ~Particle();
 

@@ -7,7 +7,7 @@ Body(Texture* texture, Emitter* emitter, const Vector2& position)
   emitter(emitter),
   position(position)
 {
-
+	emitter->position = position;
 }
 
 Body::

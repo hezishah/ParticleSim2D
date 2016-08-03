@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <string>
+#include <cstring>
 #include <ctime>
 
 #include "guisan.hpp"
@@ -12,10 +13,145 @@
 #include "System/Emitter.h"
 #include "System/Body.h"
 #include "System/Extensions.h" 
+#include "System/StringUtil.h" 
 
-//Screen dimension constants
+class EditBlock
+{
+private: 
+	bool integerOnly;
+	double value;
+	gcn::Label* label;
+	gcn::TextField* textField;
+	gcn::Slider* slider;
+
+public:
+	const double EPSILON = 0.0000001;
+
+	EditBlock(const char* caption, double scaleStart = 0, double scaleEnd = 1.0, bool integerOnly = false) :
+		integerOnly(integerOnly),
+		label(new gcn::Label(caption)),
+		textField(new gcn::TextField()),
+		slider(new gcn::Slider(scaleStart, scaleEnd))
+	{
+		value = slider->getValue();
+	}
+
+	~EditBlock()
+	{
+		delete label;
+		delete textField;
+		delete slider;
+	}
+
+	void addToContainer(gcn::Container* container, int x = 8, int y = 8)
+	{
+		textField->setSize(80, 16);
+		slider->setSize(80, 10);
+		container->add(label, x, y);
+		container->add(textField, x + 92, y + 18);
+		container->add(slider, x, y + 21);
+	}
+
+	gcn::Label* getLabel() { return label; }
+
+	gcn::TextField* getTextField() { return textField; }
+
+	gcn::Slider* getSlider() { return slider; }
+
+	double getValue() { return slider->getValue(); }
+
+	void setValue(double value) 
+	{
+		slider->setValue(value);
+		textField->setText(std::format("%g", value));
+	}
+
+	void update()
+	{
+		try
+		{
+			double sliderValue = slider->getValue();
+			if (integerOnly)
+				sliderValue = (int)sliderValue;
+
+			if (fabs(value - sliderValue) > EPSILON)
+			{
+				value = sliderValue;
+				textField->setText(std::format("%g", value));
+			}
+			else
+			{
+				const std::string& s = textField->getText();
+				double textValue = s.empty() ? slider->getScaleStart()
+											 : std::stod(textField->getText());
+
+				if (integerOnly)
+				{
+					if (fabs(textValue - (int)textValue) > EPSILON)
+					{
+						textValue = (int)textValue;
+						textField->setText(std::format("%d", value));
+						textField->setCaretPosition(UINT_MAX);
+					}
+				}
+					
+				if (fabs(value - textValue) > EPSILON)
+				{
+					if (textValue >= slider->getScaleStart() && textValue <= slider->getScaleEnd())
+					{
+						slider->setValue(textValue);
+						value = textValue;
+					}
+					else
+					{
+						textField->setText(std::format("%g", value));
+						textField->setCaretPosition(UINT_MAX);
+					}
+				}
+			}
+		}
+		catch (std::invalid_argument& e)
+		{
+			textField->setText(std::format("%g", value));
+		}
+	}
+};
+
+struct TextureEnumList : public gcn::ListModel
+{
+	int getNumberOfElements()
+	{
+		return 3;
+	}
+
+	std::string getElementAt(int i)
+	{
+		switch (i) {
+		case 0:
+			return std::string("Blue");
+		case 1:
+			return std::string("Red");
+		case 2:
+			return std::string("Green");
+		default:
+			return std::string("");
+		}
+	}
+};
+
+// Constants 
+
 const int SCREEN_WIDTH = 800;
 const int SCREEN_HEIGHT = 600;
+
+const char* PARTICLE_TEXTURE_FILENAME[] =
+{
+	"blue.bmp",
+	"red.bmp",
+	"green.bmp"
+};
+
+const char* FONT_FILENAME = "fixedfont.bmp";
 
 // SDL
 SDL_Window* sdlWindow = NULL;
@@ -23,79 +159,35 @@ SDL_Surface* sdlCanvas = NULL;
 SDL_Renderer* sdlRenderer = NULL;
 
 // SDL/GUI
-gcn::SDLInput* input;             // Input driver
-gcn::SDLGraphics* graphics;       // Graphics driver
-gcn::SDLImageLoader* imageLoader; // For loading images
+gcn::SDLInput* input;				// Input driver
+gcn::SDLGraphics* graphics;			// Graphics driver
+gcn::SDLImageLoader* imageLoader;	// For loading images
 
 // GUI
-gcn::Gui* gui;            // A Gui object - binds it all together
-gcn::ImageFont* font;     // A font
+gcn::Gui* gui;						// A Gui object - binds it all together
+gcn::ImageFont* font;				// A font
 
 // GUI Widgets
-gcn::Container* top;                 // A top container
-gcn::Label* label;                   // A label
-gcn::Icon* icon;                     // An icon (image)
-gcn::Button* button;                 // A button
-gcn::TextField* textField;           // One-line text field
-gcn::TextBox* textBox;               // Multi-line text box
-gcn::ScrollArea* textBoxScrollArea;  // Scroll area for the text box
-gcn::ListBox* listBox;               // A list box
-gcn::DropDown* dropDown;             // Drop down
-gcn::CheckBox* checkBox1;            // Two checkboxes
-gcn::CheckBox* checkBox2;
-gcn::RadioButton* radioButton1;      // Three radio buttons
-gcn::RadioButton* radioButton2;
-gcn::RadioButton* radioButton3;
-gcn::Slider* slider;                 // A slider
-gcn::Image *image;                   // An image for the icon
-gcn::Window *window;
-gcn::Image *guisanLogoImage;
-gcn::Icon* guisanLogoIcon;
-gcn::ScrollArea* nestedScrollArea;
-gcn::Container* nestedContainer;
-gcn::Slider* nestedSlider;
+gcn::Container* top;                // A top container
+gcn::Container* settings;			// right container
+gcn::Label* lblFPS;
+gcn::TextBox* textDescription;
+gcn::CheckBox* chkEnabled;
+gcn::DropDown* ddTexture;
+gcn::Label* lblCurrentParticleCount;
 
-/*
-* List boxes and dropdowns needs an instance of a listmodel
-* to know what elements they have.
-*/
-class DemoListModel : public gcn::ListModel
-{
-public:
-	int getNumberOfElements()
-	{
-		return 5;
-	}
+EditBlock* editMaxParticles;
+EditBlock* editLifeTime;
+gcn::CheckBox* chkFade;
+EditBlock* editRate;
+EditBlock* editRadius;
+EditBlock* editAngle;
+EditBlock* editSpread;
+EditBlock* editMinSpeed;
+EditBlock* editMaxSpeed;
+EditBlock* editGravity;
 
-	std::string getElementAt(int i)
-	{
-		switch (i) {
-		case 0:
-			return std::string("zero");
-		case 1:
-			return std::string("one");
-		case 2:
-			return std::string("two");
-		case 3:
-			return std::string("three");
-		case 4:
-			return std::string("four");
-		default: // Just to keep warnings away
-			return std::string("");
-		}
-	}
-};
-
-DemoListModel demoListModel;
-
-const char* particleTextureFilename[] =
-{
-    "blue.bmp",
-    "red.bmp",
-    "green.bmp"
-};
-
-int particleTextureIndex = 0;
+TextureEnumList textureList;
 
 void pause()
 {
@@ -116,115 +208,103 @@ void error(const char* fmt, ...)
 
 void createWidgets()
 {
-	/*
-	* Create all the widgets
-	*/
-	label = new gcn::Label("Label");
+	settings = new gcn::Container();
+	settings->setSize(200, 600);
+	settings->setBaseColor(gcn::Color(0xC7, 0xC7, 0xC7));
 
-	image = gcn::Image::load("guisan.png");
-	icon = new gcn::Icon(image);
+	lblFPS = new gcn::Label("FPS:");
+	textDescription = new gcn::TextBox("The small black circle has a particle emitter attached to it.    \n" 
+									   "Left-click and drag to move. You can change settings on the left \n"
+		                               "panel but the changes will only apply to new particles.          \n"); 
 
-	button = new gcn::Button("Button");
+	textDescription->setEditable(false);
+	chkEnabled = new gcn::CheckBox("Enabled", false);
+	ddTexture = new gcn::DropDown(&textureList);
+	lblCurrentParticleCount = new gcn::Label("Particle Count: 0");
 
-	textField = new gcn::TextField("Text field");
+	editMaxParticles = new EditBlock("Max Number of Particles:", 1, Emitter::MAX_PARTICLES, true);
+	editLifeTime = new EditBlock("Life Time:", 0.1, 10);
 
-	textBox = new gcn::TextBox("Lorem ipsum dolor sit amet consectetur\n"
-		"adipiscing elit Integer vitae ultrices\n"
-		"eros Curabitur malesuada dolor imperdieat\n"
-		"ante facilisis ut convallis sem rutrum\n"
-		"Praesent consequat urna convallis leo\n"
-		"aliquam pellentesque Integer laoreet enim\n"
-		"vehicula libero blandit at pellentesque\n"
-		"ipsum vehicula Mauris id turpis hendrerit\n"
-		"tempor velit nec hendrerit nulla");
-	textBoxScrollArea = new gcn::ScrollArea(textBox);
-	textBoxScrollArea->setWidth(270);
-	textBoxScrollArea->setHeight(100);
-	textBoxScrollArea->setBorderSize(1);
+	editRate = new EditBlock("Rate:", 0.1, 1000);
+	editRadius = new EditBlock("Radius:", 0, 1000);
+	editAngle = new EditBlock("Angle:", 0, 360);
+	editSpread = new EditBlock("Spread:", 0, 360);
+	editMinSpeed = new EditBlock("Min Speed:", 0, 1000);
+	editMaxSpeed = new EditBlock("Max Speed:", 0, 1000);
+	editGravity = new EditBlock("Gravity:", 0, 1000);
 
-	listBox = new gcn::ListBox(&demoListModel);
-	listBox->setBorderSize(1);
+	editMaxParticles->setValue(1024);
+	editLifeTime->setValue(4);
+	chkFade = new gcn::CheckBox("Fade", true);
+	editRate->setValue(100);
+	editRadius->setValue(10);
+	editAngle->setValue(90);
+	editSpread->setValue(60);
+	editMinSpeed->setValue(80);
+	editMaxSpeed->setValue(100);
+	editGravity->setValue(98);
 
-	dropDown = new gcn::DropDown(&demoListModel);
+	settings->add(lblFPS, 8, 8);
+	settings->add(chkEnabled, 8, 78);	
+	settings->add(ddTexture, 80, 78);
+	settings->add(lblCurrentParticleCount, 8, 98);
 
-	checkBox1 = new gcn::CheckBox("Checkbox 1");
-	checkBox2 = new gcn::CheckBox("Checkbox 2");
+	editMaxParticles->addToContainer(settings, 8, 120);
+	editLifeTime->addToContainer(settings, 8, 165);
 
-	radioButton1 = new gcn::RadioButton("Radio Button 1", "radiogroup", true);
-	radioButton2 = new gcn::RadioButton("Radio Button 2", "radiogroup");
-	radioButton3 = new gcn::RadioButton("Radio Button 3", "radiogroup");
+	settings->add(chkFade, 8, 205);
 
-	slider = new gcn::Slider(0, 10);
-	slider->setSize(100, 10);
+	editRate->addToContainer(settings, 8, 225);
+	editRadius->addToContainer(settings, 8, 270);
+	editAngle->addToContainer(settings, 8, 315);
+	editSpread->addToContainer(settings, 8, 360);
+	editMinSpeed->addToContainer(settings, 8, 405);
+	editMaxSpeed->addToContainer(settings, 8, 450);
+	editGravity->addToContainer(settings, 8, 495);
 
-	window = new gcn::Window("I am a window  Drag me");
-	window->setBaseColor(gcn::Color(212, 255, 150, 190));
+	top->add(textDescription, 8, 8);
+	top->add(settings, 600, 0);
+}
 
-	guisanLogoImage = gcn::Image::load("guisan-logo.png");
-	guisanLogoIcon = new gcn::Icon(guisanLogoImage);
-	window->add(guisanLogoIcon);
-	window->resizeToContent();
-
-	nestedSlider = new gcn::Slider(0, 10);
-	nestedSlider->setSize(100, 10);
-
-	nestedContainer = new gcn::Container();
-	nestedContainer->setSize(400, 200);
-	nestedContainer->add(nestedSlider, 50, 70);
-
-	nestedScrollArea = new gcn::ScrollArea(nestedContainer);
-	nestedScrollArea->setSize(180, 90);
-	nestedScrollArea->setBorderSize(1);
-
-	/*
-	* Add them to the top container
-	*/
-	top->add(label, 290, 10);
-	top->add(icon, 10, 10);
-	top->add(button, 325, 10);
-	top->add(textField, 375, 10);
-	top->add(textBoxScrollArea, 290, 50);
-	top->add(listBox, 290, 200);
-	top->add(dropDown, 580, 10);
-	top->add(checkBox1, 580, 50);
-	top->add(checkBox2, 580, 70);
-	top->add(radioButton1, 580, 120);
-	top->add(radioButton2, 580, 140);
-	top->add(radioButton3, 580, 160);
-	top->add(slider, 580, 200);
-	top->add(window, 100, 350);
-	top->add(nestedScrollArea, 440, 350);
-
+void updateWidgets()
+{
+	editMaxParticles->update();
+	editLifeTime->update();
+	editRate->update();
+	editRadius->update();
+	editAngle->update();
+	editSpread->update();
+	editMinSpeed->update();
+	editMaxSpeed->update();
+	editGravity->update();
 }
 
 void deleteWidgets()
 {
 	delete top;
-	delete label;
-	delete icon;
-	delete button;
-	delete textField;
-	delete textBox;
-	delete textBoxScrollArea;
-	delete listBox;
-	delete dropDown;
-	delete checkBox1;
-	delete checkBox2;
-	delete radioButton1;
-	delete radioButton2;
-	delete radioButton3;
-	delete slider;
-	delete window;
-	delete guisanLogoIcon;
-	delete guisanLogoImage;
-	delete nestedScrollArea;
-	delete nestedContainer;
-	delete nestedSlider;
+	delete settings;
+
+	delete lblFPS;
+	delete textDescription;
+	delete chkEnabled;
+	delete ddTexture;
+	delete lblCurrentParticleCount;
+
+	delete editMaxParticles;
+	delete editLifeTime;
+	delete chkFade;
+	delete editRate;
+	delete editRadius;
+	delete editAngle;
+	delete editSpread;
+	delete editMinSpeed;
+	delete editMaxSpeed;
+	delete editGravity;
 }
 
 int main(int argc, char* args[])
 {
-    atexit(pause);
+    // atexit(pause);
     std::randomize();
 
     //Initialize SDL
@@ -273,6 +353,9 @@ int main(int argc, char* args[])
     top = new gcn::Container();
     // Set the dimension of the top container to match the screen.
     top->setDimension(gcn::Rectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT));
+	// Set base color
+	top->setBaseColor(gcn::Color(255, 255, 255));
+
     gui = new gcn::Gui();
     // Set gui to use the SDLGraphics object.
     gui->setGraphics(graphics);
@@ -281,95 +364,141 @@ int main(int argc, char* args[])
     // Set the top container
     gui->setTop(top);
     // Load the image font.
-    font = new gcn::ImageFont("fixedfont.bmp", " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+    font = new gcn::ImageFont(FONT_FILENAME, " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:-");
     // The global font is static and must be set.
     gcn::Widget::setGlobalFont(font);
-
+	
+	// Create Widgets
 	createWidgets();
 
-    // Simulation
-
+    // Create Texture to use for particles
     Texture particleTexture(sdlRenderer);
-    particleTexture.Load(particleTextureFilename[particleTextureIndex]);
-    particleTexture.setAlpha(192);
+	int particleTextureIndex = ddTexture->getSelected();
+    particleTexture.Load(PARTICLE_TEXTURE_FILENAME[particleTextureIndex]);
+	// particleTexture.setAlpha(192);
 
+	// Create Texture to use for body
     Texture bodyTexture(sdlRenderer);
     bodyTexture.Load("dot.bmp");
 
-    // Emitter
-    Vector2 startPosition(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2);
-    int spawnRate = 8;
-    float lifetime = 1.5;
-    float radius = 11;
-    float angleOfEmission = 90;
-    float aperture = 30;
-    float minSpeed = 280;
-    float maxSpeed = 300;
-    float gravity = 350;
-    Emitter emitter(&particleTexture, startPosition, spawnRate, lifetime, radius, angleOfEmission, aperture, minSpeed, maxSpeed, gravity);
+    // Create Emitter
+	Emitter emitter(&particleTexture);
 
-    // Body
-    float mass = 1;
-    Body body(&bodyTexture, &emitter, startPosition);
+    // Create Body
+    Body body(&bodyTexture, &emitter, Vector2(SCREEN_HEIGHT / 2, SCREEN_HEIGHT / 2));
 
     // Loop control
+	bool dragging = false;
     bool terminated = false;
     uint32_t last = SDL_GetTicks();
-    while (!terminated)
-    {
-        // Handle Input
-        SDL_Event e;
-        while (SDL_PollEvent(&e) != 0)
-        {
-            switch (e.type)
-            {
-            case SDL_QUIT:
-                terminated = true;
-                break;
+	while (!terminated)
+	{
+		// Delta Time and FPS
+		uint32_t now = SDL_GetTicks();
+		float deltaTime = float(now - last) / 1000;
+		last = now;
 
-            case SDL_KEYDOWN:
-                switch (e.key.keysym.sym)
-                {
-                case SDLK_SPACE:
-                    particleTextureIndex = (particleTextureIndex + 1) % (sizeof(particleTextureFilename) / sizeof(particleTextureFilename[0]));
-                    particleTexture.Load(particleTextureFilename[particleTextureIndex]);
-                    break;
-                case SDLK_ESCAPE: terminated = true; break;
-                case SDLK_RETURN: body.getEmitter()->setEnabled(!body.getEmitter()->getEnabled()); break;
-                    // case SDLK_UP: body.addForce(Vector2::Up * moveForce); break;
-                    // case SDLK_DOWN: body.addForce(Vector2::Down * moveForce); break;
-                    // case SDLK_LEFT: body.addForce(Vector2::Left * moveForce); break;
-                    // case SDLK_RIGHT: body.addForce(Vector2::Right * moveForce); break;
-                }
-                break;
-            }
+		// Handle Input
+		SDL_Event e;
+		while (SDL_PollEvent(&e) != 0)
+		{
+			switch (e.type)
+			{
+			case SDL_QUIT:
+				terminated = true;
+				break;
 
-            // Now that we are done polling and using SDL events we pass
-            // the leftovers to the SDLInput object to later be handled by
-            // the Gui. (This example doesn't require us to do this 'cause a
-            // label doesn't use input. But will do it anyway to show how to
-            // set up an SDL application with Guichan.)            
-            input->pushInput(e);
-        }
+			case SDL_KEYDOWN:
+				switch (e.key.keysym.sym)
+				{
+					case SDLK_ESCAPE: terminated = true; break;
+				}
+				break;
+			case SDL_MOUSEBUTTONDOWN:
+				if (e.button.button == SDL_BUTTON_LEFT)
+				{
+					//Get the mouse offsets
+					int x = e.button.x;
+					int y = e.button.y;
 
-        //Clear screen
-        SDL_SetRenderDrawColor(sdlRenderer, 0xFF, 0xFF, 0xFF, 0xFF);
-        SDL_RenderClear(sdlRenderer);
+					int minX = body.position.x - 10;
+					int maxX = body.position.x + 10;
+					int minY = body.position.y - 10;
+					int maxY = body.position.y + 10;
+					if (x >= minX && x <= maxX && y >= minY && y <= maxY)
+						dragging = true;
+				}
+				break;
+			case SDL_MOUSEBUTTONUP:
+				if (e.button.button == SDL_BUTTON_LEFT)
+					dragging = false;
+				break;
+			}
 
-        // Let the gui perform it's logic (like handle input)
-        gui->logic();
-        // Draw the gui
-        gui->draw();
+			// Now that we are done polling and using SDL events we pass
+			// the leftovers to the SDLInput object to later be handled by
+			// the Gui. (This example doesn't require us to do this 'cause a
+			// label doesn't use input. But will do it anyway to show how to
+			// set up an SDL application with Guichan.)            
+			input->pushInput(e);
+		}
 
-		// Apply canvas
+		//Clear screen
+		SDL_SetRenderDrawColor(sdlRenderer, 0xFF, 0xFF, 0xFF, 0xFF);
+		SDL_RenderClear(sdlRenderer);
+
+		// Let the gui perform it's logic (like handle input)
+		gui->logic();
+		// Draw the gui
+		gui->draw();
+
+		
+		// Update widgets
+		lblFPS->setCaption(std::format("FPS: %g", 1 / deltaTime));
+		lblFPS->adjustSize();
+
+		lblCurrentParticleCount->setCaption(std::format("Particle Count: %d", emitter.getParticleCount()));
+		lblCurrentParticleCount->adjustSize();
+
+		updateWidgets();
+
+		// Update Particles
+		if (particleTextureIndex != ddTexture->getSelected())
+		{
+			particleTextureIndex = ddTexture->getSelected();
+			particleTexture.Load(PARTICLE_TEXTURE_FILENAME[particleTextureIndex]);
+		}
+
+		// Update Emitter
+		emitter.setEnabled(chkEnabled->isSelected());
+		emitter.setMaxParticles((int)editMaxParticles->getValue());
+		emitter.setRate(editRate->getValue());
+		emitter.setLifeTime(editLifeTime->getValue());
+		emitter.setRadius(editRadius->getValue());
+		emitter.setAngle(editAngle->getValue());
+		emitter.setSpread(editSpread->getValue());
+		emitter.setMinSpeed(editMinSpeed->getValue());
+		emitter.setMaxSpeed(editMaxSpeed->getValue());
+		emitter.setGravity(editGravity->getValue());
+		emitter.setFade(chkFade->isSelected());
+
+		// Update Body
+		if (dragging)
+		{
+			int x, y;
+			SDL_GetMouseState(&x, &y);
+			if (x < 600)
+				body.position.x = x;
+			body.position.y = y;
+		}
+
+		// Render Canvas
 		SDL_Texture* texture = SDL_CreateTextureFromSurface(sdlRenderer, sdlCanvas);
 		SDL_RenderCopy(sdlRenderer, texture, 0, 0);
 		SDL_DestroyTexture(texture);
 
-		// Update body
-		uint32_t now = SDL_GetTicks();
-		float deltaTime = float(now - last) / 1000;
-		last = now;
+		
+		// Render Body
 		body.update(deltaTime);
 
         //Update render
