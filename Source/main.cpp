@@ -2,192 +2,31 @@
 #include <string>
 #include <cstring>
 #include <ctime>
+#include <iostream>
 
-#include "guisan.hpp"
-#include <guisan/sdl.hpp>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
-#include <SDL.h>
-#include <SDL_image.h>
+#include <SDL/SDL.h>
+#include <SDL/SDL_image.h>
+#include <SDL/SDL_opengl.h>
+#include <gl/GL.h>
+#include <gl/GLU.h>
 
-#include "System/Texture.h"
-#include "System/Emitter.h"
-#include "System/Body.h"
-#include "System/Extensions.h" 
-#include "System/StringUtil.h" 
+#include "nanogui/nanogui.h"
 
-class EditBlock
-{
-private: 
-	bool integerOnly;
-	double value;
-	gcn::Label* label;
-	gcn::TextField* textField;
-	gcn::Slider* slider;
-
-public:
-	const double EPSILON = 0.0000001;
-
-	EditBlock(const char* caption, double scaleStart = 0, double scaleEnd = 1.0, bool integerOnly = false) :
-		integerOnly(integerOnly),
-		label(new gcn::Label(caption)),
-		textField(new gcn::TextField()),
-		slider(new gcn::Slider(scaleStart, scaleEnd))
-	{
-		value = slider->getValue();
-	}
-
-	~EditBlock()
-	{
-		delete label;
-		delete textField;
-		delete slider;
-	}
-
-	void addToContainer(gcn::Container* container, int x = 8, int y = 8)
-	{
-		textField->setSize(80, 16);
-		slider->setSize(80, 10);
-		container->add(label, x, y);
-		container->add(textField, x + 92, y + 18);
-		container->add(slider, x, y + 21);
-	}
-
-	gcn::Label* getLabel() { return label; }
-
-	gcn::TextField* getTextField() { return textField; }
-
-	gcn::Slider* getSlider() { return slider; }
-
-	double getValue() { return slider->getValue(); }
-
-	void setValue(double value) 
-	{
-		slider->setValue(value);
-		textField->setText(std::format("%g", value));
-	}
-
-	void update()
-	{
-		try
-		{
-			double sliderValue = slider->getValue();
-			if (integerOnly)
-				sliderValue = (int)sliderValue;
-
-			if (fabs(value - sliderValue) > EPSILON)
-			{
-				value = sliderValue;
-				textField->setText(std::format("%g", value));
-			}
-			else
-			{
-				const std::string& s = textField->getText();
-				double textValue = s.empty() ? slider->getScaleStart()
-											 : std::stod(textField->getText());
-
-				if (integerOnly)
-				{
-					if (fabs(textValue - (int)textValue) > EPSILON)
-					{
-						textValue = (int)textValue;
-						textField->setText(std::format("%d", value));
-						textField->setCaretPosition(UINT_MAX);
-					}
-				}
-					
-				if (fabs(value - textValue) > EPSILON)
-				{
-					if (textValue >= slider->getScaleStart() && textValue <= slider->getScaleEnd())
-					{
-						slider->setValue(textValue);
-						value = textValue;
-					}
-					else
-					{
-						textField->setText(std::format("%g", value));
-						textField->setCaretPosition(UINT_MAX);
-					}
-				}
-			}
-		}
-		catch (std::invalid_argument& e)
-		{
-			textField->setText(std::format("%g", value));
-		}
-	}
-};
-
-struct TextureEnumList : public gcn::ListModel
-{
-	int getNumberOfElements()
-	{
-		return 3;
-	}
-
-	std::string getElementAt(int i)
-	{
-		switch (i) {
-		case 0:
-			return std::string("Blue");
-		case 1:
-			return std::string("Red");
-		case 2:
-			return std::string("Green");
-		default:
-			return std::string("");
-		}
-	}
-};
+#include "MainScreen.h"
+#include "Extensions.h"
+#include "Body.h"
+#include "Emitter.h"
+#include "Vector2.h"
 
 // Constants 
-
-const int SCREEN_WIDTH = 800;
+const int SCREEN_WIDTH = 1024;
 const int SCREEN_HEIGHT = 600;
 
-const char* PARTICLE_TEXTURE_FILENAME[] =
-{
-	"blue.bmp",
-	"red.bmp",
-	"green.bmp"
-};
-
-const char* FONT_FILENAME = "fixedfont.bmp";
-
-// SDL
-SDL_Window* sdlWindow = NULL;
-SDL_Surface* sdlCanvas = NULL;
-SDL_Renderer* sdlRenderer = NULL;
-
-// SDL/GUI
-gcn::SDLInput* input;				// Input driver
-gcn::SDLGraphics* graphics;			// Graphics driver
-gcn::SDLImageLoader* imageLoader;	// For loading images
-
-// GUI
-gcn::Gui* gui;						// A Gui object - binds it all together
-gcn::ImageFont* font;				// A font
-
-// GUI Widgets
-gcn::Container* top;                // A top container
-gcn::Container* settings;			// right container
-gcn::Label* lblFPS;
-gcn::TextBox* textDescription;
-gcn::CheckBox* chkEnabled;
-gcn::DropDown* ddTexture;
-gcn::Label* lblCurrentParticleCount;
-
-EditBlock* editMaxParticles;
-EditBlock* editLifeTime;
-gcn::CheckBox* chkFade;
-EditBlock* editRate;
-EditBlock* editRadius;
-EditBlock* editAngle;
-EditBlock* editSpread;
-EditBlock* editMinSpeed;
-EditBlock* editMaxSpeed;
-EditBlock* editGravity;
-
-TextureEnumList textureList;
+const float FIXED_DELTA_TIME = 0.022;
 
 void pause()
 {
@@ -206,322 +45,328 @@ void error(const char* fmt, ...)
     exit(EXIT_FAILURE);
 }
 
-void createWidgets()
+
+class Simulation
 {
-	settings = new gcn::Container();
-	settings->setSize(200, 600);
-	settings->setBaseColor(gcn::Color(0xC7, 0xC7, 0xC7));
+	MainScreen* settings;
+	Emitter* emitter;
+	Body* body;
+	bool dragging;
 
-	lblFPS = new gcn::Label("FPS:");
-	textDescription = new gcn::TextBox("The small black circle has a particle emitter attached to it.    \n" 
-									   "Left-click and drag to move. You can change settings on the left \n"
-		                               "panel but the changes will only apply to new particles.          \n"); 
+	void Settings_EnableChanged(bool value)
+	{
+		emitter->setEnabled(value);
+	}
 
-	textDescription->setEditable(false);
-	chkEnabled = new gcn::CheckBox("Enabled", false);
-	ddTexture = new gcn::DropDown(&textureList);
-	lblCurrentParticleCount = new gcn::Label("Particle Count: 0");
+	void Settings_ColorChanged(const nanogui::Color& value)
+	{
+		SDL_Color color;
+		color.r = value.r() * 255;
+		color.g = value.g() * 255;
+		color.b = value.b() * 255;
+		color.a = 255;
+		emitter->setColor(color);
+	}
 
-	editMaxParticles = new EditBlock("Max Number of Particles:", 1, Emitter::MAX_PARTICLES, true);
-	editLifeTime = new EditBlock("Life Time:", 0.1, 10);
+	void Settings_MaxParticlesChanged(int value)
+	{
+		emitter->setMaxParticles(value);
+	}
 
-	editRate = new EditBlock("Rate:", 0.1, 1000);
-	editRadius = new EditBlock("Radius:", 0, 1000);
-	editAngle = new EditBlock("Angle:", 0, 360);
-	editSpread = new EditBlock("Spread:", 0, 360);
-	editMinSpeed = new EditBlock("Min Speed:", 0, 1000);
-	editMaxSpeed = new EditBlock("Max Speed:", 0, 1000);
-	editGravity = new EditBlock("Gravity:", 0, 1000);
+	void Settings_ParticleSizeChanged(float value)
+	{
+		emitter->setParticleSize(value);
+	}
 
-	editMaxParticles->setValue(1024);
-	editLifeTime->setValue(4);
-	chkFade = new gcn::CheckBox("Fade", true);
-	editRate->setValue(100);
-	editRadius->setValue(10);
-	editAngle->setValue(90);
-	editSpread->setValue(60);
-	editMinSpeed->setValue(80);
-	editMaxSpeed->setValue(100);
-	editGravity->setValue(98);
+	void Settings_LifeTimeChanged(float value)
+	{
+		emitter->setLifeTime(value);
+	}
 
-	settings->add(lblFPS, 8, 8);
-	settings->add(chkEnabled, 8, 78);	
-	settings->add(ddTexture, 80, 78);
-	settings->add(lblCurrentParticleCount, 8, 98);
+	void Settings_FadeChanged(bool value)
+	{
+		emitter->setFade(value);
+	}
 
-	editMaxParticles->addToContainer(settings, 8, 120);
-	editLifeTime->addToContainer(settings, 8, 165);
+	void Settings_RateChanged(float value)
+	{
+		emitter->setRate(value);
+	}
 
-	settings->add(chkFade, 8, 205);
+	void Settings_RadiusChanged(float value)
+	{
+		emitter->setRadius(value);
+	}
 
-	editRate->addToContainer(settings, 8, 225);
-	editRadius->addToContainer(settings, 8, 270);
-	editAngle->addToContainer(settings, 8, 315);
-	editSpread->addToContainer(settings, 8, 360);
-	editMinSpeed->addToContainer(settings, 8, 405);
-	editMaxSpeed->addToContainer(settings, 8, 450);
-	editGravity->addToContainer(settings, 8, 495);
+	void Settings_AngleChanged(float value)
+	{
+		emitter->setAngle(value);
+	}
 
-	top->add(textDescription, 8, 8);
-	top->add(settings, 600, 0);
-}
+	void Settings_SpreadChanged(float value)
+	{
+		emitter->setSpread(value);
+	}
 
-void updateWidgets()
-{
-	editMaxParticles->update();
-	editLifeTime->update();
-	editRate->update();
-	editRadius->update();
-	editAngle->update();
-	editSpread->update();
-	editMinSpeed->update();
-	editMaxSpeed->update();
-	editGravity->update();
-}
+	void Settings_MinSpeedChanged(float value)
+	{
+		emitter->setMinSpeed(value);
+	}
 
-void deleteWidgets()
-{
-	delete top;
-	delete settings;
+	void Settings_MaxSpeedChanged(float value)
+	{
+		emitter->setMaxSpeed(value);
+	}
 
-	delete lblFPS;
-	delete textDescription;
-	delete chkEnabled;
-	delete ddTexture;
-	delete lblCurrentParticleCount;
+	void Settings_GravityChanged(float value)
+	{
+		emitter->setGravity(value);
+	}
 
-	delete editMaxParticles;
-	delete editLifeTime;
-	delete chkFade;
-	delete editRate;
-	delete editRadius;
-	delete editAngle;
-	delete editSpread;
-	delete editMinSpeed;
-	delete editMaxSpeed;
-	delete editGravity;
-}
+public:
+	Simulation(const std::string& title, SDL_Window* window, int width, int height)
+		: dragging(false)
+	{
+		Vector2 startPosition(width / 2, height / 2);
+
+		settings = new MainScreen("Particle Sim 2D", window, width, height);
+		auto& color = settings->getColor();
+		SDL_Color sdlColor;
+		sdlColor.r = color.r() * 255;
+		sdlColor.g = color.g() * 255;
+		sdlColor.b = color.b() * 255;
+		sdlColor.a = 255;
+
+		emitter = new Emitter(
+			startPosition,
+			width,
+			height,
+			settings->getRate(),
+			settings->getParticleSize(),
+			settings->getLifeTime(),
+			settings->getFade(),
+			settings->getRadius(),
+			settings->getAngle(),
+			settings->getSpread(),
+			settings->getMinSpeed(),
+			settings->getMaxSpeed(),
+			settings->getGravity(),
+			settings->getMaxParticles(),
+			sdlColor
+			
+		);
+		body = new Body(emitter, startPosition);
+
+		settings->enableChanged = std::bind(&Simulation::Settings_EnableChanged, this, std::placeholders::_1);
+		settings->colorChanged = std::bind(&Simulation::Settings_ColorChanged, this, std::placeholders::_1);
+		settings->maxParticlesChanged = std::bind(&Simulation::Settings_MaxParticlesChanged, this, std::placeholders::_1);
+		settings->particleSizeChanged = std::bind(&Simulation::Settings_ParticleSizeChanged, this, std::placeholders::_1);
+		settings->lifeTimeChanged = std::bind(&Simulation::Settings_LifeTimeChanged, this, std::placeholders::_1);
+		settings->fadeChanged = std::bind(&Simulation::Settings_FadeChanged, this, std::placeholders::_1);
+		settings->rateChanged = std::bind(&Simulation::Settings_RateChanged, this, std::placeholders::_1);
+		settings->radiusChanged = std::bind(&Simulation::Settings_RadiusChanged, this, std::placeholders::_1);
+		settings->angleChanged = std::bind(&Simulation::Settings_AngleChanged, this, std::placeholders::_1);
+		settings->spreadChanged = std::bind(&Simulation::Settings_SpreadChanged, this, std::placeholders::_1);
+		settings->minSpeedChanged = std::bind(&Simulation::Settings_MinSpeedChanged, this, std::placeholders::_1);
+		settings->maxSpeedChanged = std::bind(&Simulation::Settings_MaxSpeedChanged, this, std::placeholders::_1);
+		settings->gravityChanged = std::bind(&Simulation::Settings_GravityChanged, this, std::placeholders::_1);
+	}
+
+	~Simulation()
+	{
+		delete body;
+		delete emitter;
+		delete settings;
+	}
+
+	void
+	update(float deltaTime)
+	{
+		if (dragging)
+		{
+			int x, y;
+			SDL_GetMouseState(&x, &y);
+			body->position.x = x;
+			body->position.y = y;
+		}
+		body->update(deltaTime);
+		settings->setParticleCount(emitter->getParticleCount());
+	}
+
+	void
+	handle_event(SDL_Event& e)
+	{
+		switch (e.type)
+		{
+		case SDL_MOUSEBUTTONDOWN:
+			if (e.button.button == SDL_BUTTON_LEFT)
+			{
+				Vector2 mousePosition(e.button.x, e.button.y);
+				if (Vector2::Distance(mousePosition, body->position) < 10)
+					dragging = true;
+			}
+			break;
+		case SDL_MOUSEBUTTONUP:
+			if (e.button.button == SDL_BUTTON_LEFT)
+			{
+				dragging = false;
+			}
+			break;
+		}
+
+		settings->onEvent(e);
+	}
+
+	void
+	render()
+	{
+		// Set ModelView matrix mode and reset to the default identity matrix and orthogonal projection
+		glMatrixMode(GL_MODELVIEW);
+		glLoadIdentity();
+		gluOrtho2D(0.0f, SCREEN_WIDTH, SCREEN_HEIGHT, 0.0f);
+
+		body->render();
+
+		settings->drawAll();
+	}
+
+	void
+	setFPS(int value)
+	{
+		settings->setFPS(value);
+	}
+};
 
 int main(int argc, char* args[])
 {
     // atexit(pause);
     std::randomize();
 
+	// SDL
+	SDL_Window* sdlWindow = NULL;
+
     //Initialize SDL
     if (SDL_Init(SDL_INIT_VIDEO) < 0)
         error("SDL could not initialize! SDL Error: %s\n", SDL_GetError());
-    
-    //Set texture filtering to linear
-    if (!SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1"))
-        fprintf(stderr, "WARNING: Linear texture filtering not enabled!");
+
+	//Set texture filtering to linear
+	if (!SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1"))
+		fprintf(stderr, "WARNING: Linear texture filtering not enabled!");
+
+	// GL Settings (OpenGL 2.0 with Double Buffer and core profile)
+	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 1);
+	SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+	SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+	SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+	SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+	SDL_GL_SetAttribute(SDL_GL_BUFFER_SIZE, 32);
 
     //Create window
-    sdlWindow = SDL_CreateWindow("Particle Sim 2D", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, SCREEN_WIDTH, SCREEN_HEIGHT, SDL_WINDOW_SHOWN);
+    sdlWindow = SDL_CreateWindow("Particle Sim 2D", 
+		SDL_WINDOWPOS_CENTERED, 
+		SDL_WINDOWPOS_CENTERED,
+		SCREEN_WIDTH, 
+		SCREEN_HEIGHT, 
+		SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
+
     if (sdlWindow == NULL)
         error("Window could not be created! SDL Error: %s\n", SDL_GetError());
 
-    //Create renderer for window
-    sdlRenderer = SDL_CreateRenderer(sdlWindow, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (sdlRenderer == NULL)
-        error("Renderer could not be created! SDL Error: %s\n", SDL_GetError());
+	// Create GL Context
+	SDL_GLContext context = SDL_GL_CreateContext(sdlWindow);
 
-    sdlCanvas = SDL_GetWindowSurface(sdlWindow);
-    if (sdlCanvas == NULL)
-        error("Canvas could not be created! SDL Error: %s\n", SDL_GetError());
-
-    //Initialize renderer color
-    SDL_SetRenderDrawColor(sdlRenderer, 0xFF, 0xFF, 0xFF, 0xFF);
+	// Set background color
+	glClearColor(0.2, 0.2, 0.2, 1);
 
     //Initialize PNG loading
     int imgFlags = IMG_INIT_PNG;
     if (!(IMG_Init(imgFlags) & imgFlags))
         error("SDL_image could not initialize! SDL_image Error: %s\n", IMG_GetError());
 
+	nanogui::init();
 
-    // GUI
-    imageLoader = new gcn::SDLImageLoader();
-    // The ImageLoader in use is static and must be set to be able to load images
-    gcn::Image::setImageLoader(imageLoader);
-    graphics = new gcn::SDLGraphics();
-    // Set the target for the graphics object to be the screen.
-    // In other words, we will draw to the screen.
-    // Note, any surface will do, it doesn't have to be the screen.
-    graphics->setTarget(sdlCanvas);
-    input = new gcn::SDLInput();
+	Simulation* simulation = new Simulation("Particle Sim 2D", sdlWindow, SCREEN_WIDTH, SCREEN_HEIGHT);
 
-    // Initialize and create the gui with Guichan stuff.
-    top = new gcn::Container();
-    // Set the dimension of the top container to match the screen.
-    top->setDimension(gcn::Rectangle(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT));
-	// Set base color
-	top->setBaseColor(gcn::Color(255, 255, 255));
-
-    gui = new gcn::Gui();
-    // Set gui to use the SDLGraphics object.
-    gui->setGraphics(graphics);
-    // Set gui to use the SDLInput object
-    gui->setInput(input);
-    // Set the top container
-    gui->setTop(top);
-    // Load the image font.
-    font = new gcn::ImageFont(FONT_FILENAME, " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.:-");
-    // The global font is static and must be set.
-    gcn::Widget::setGlobalFont(font);
-	
-	// Create Widgets
-	createWidgets();
-
-    // Create Texture to use for particles
-    Texture particleTexture(sdlRenderer);
-	int particleTextureIndex = ddTexture->getSelected();
-    particleTexture.Load(PARTICLE_TEXTURE_FILENAME[particleTextureIndex]);
-	// particleTexture.setAlpha(192);
-
-	// Create Texture to use for body
-    Texture bodyTexture(sdlRenderer);
-    bodyTexture.Load("dot.bmp");
-
-    // Create Emitter
-	Emitter emitter(&particleTexture);
-
-    // Create Body
-    Body body(&bodyTexture, &emitter, Vector2(SCREEN_HEIGHT / 2, SCREEN_HEIGHT / 2));
+	// Disable depth testing (because we're working in 2D!)
+	glDisable(GL_DEPTH_TEST);
+	// Enable blending (we need this to be able to use an alpha component)
+	glEnable(GL_BLEND);
+	// For circles rather than square points
+	glEnable(GL_POINT_SMOOTH);
 
     // Loop control
-	bool dragging = false;
+	uint32_t last = SDL_GetTicks();
     bool terminated = false;
-    uint32_t last = SDL_GetTicks();
-	while (!terminated)
+	float fpsElapsedTime = 0;
+	int fpsFrameCount = 0;
+	float elapsedTime = 0;
+	try
 	{
-		// Delta Time and FPS
-		uint32_t now = SDL_GetTicks();
-		float deltaTime = float(now - last) / 1000;
-		last = now;
-
-		// Handle Input
-		SDL_Event e;
-		while (SDL_PollEvent(&e) != 0)
+		while (!terminated)
 		{
-			switch (e.type)
+			// Delta Time and FPS
+			uint32_t now = SDL_GetTicks();
+			float deltaTime = float(now - last) / 1000;
+			last = now;
+
+			elapsedTime += deltaTime;
+			for (;elapsedTime >= FIXED_DELTA_TIME; elapsedTime -= FIXED_DELTA_TIME)
 			{
-			case SDL_QUIT:
-				terminated = true;
-				break;
-
-			case SDL_KEYDOWN:
-				switch (e.key.keysym.sym)
-				{
-					case SDLK_ESCAPE: terminated = true; break;
-				}
-				break;
-			case SDL_MOUSEBUTTONDOWN:
-				if (e.button.button == SDL_BUTTON_LEFT)
-				{
-					//Get the mouse offsets
-					int x = e.button.x;
-					int y = e.button.y;
-
-					int minX = body.position.x - 10;
-					int maxX = body.position.x + 10;
-					int minY = body.position.y - 10;
-					int maxY = body.position.y + 10;
-					if (x >= minX && x <= maxX && y >= minY && y <= maxY)
-						dragging = true;
-				}
-				break;
-			case SDL_MOUSEBUTTONUP:
-				if (e.button.button == SDL_BUTTON_LEFT)
-					dragging = false;
-				break;
+				simulation->update(FIXED_DELTA_TIME);
 			}
 
-			// Now that we are done polling and using SDL events we pass
-			// the leftovers to the SDLInput object to later be handled by
-			// the Gui. (This example doesn't require us to do this 'cause a
-			// label doesn't use input. But will do it anyway to show how to
-			// set up an SDL application with Guichan.)            
-			input->pushInput(e);
+			fpsElapsedTime += deltaTime;
+			fpsFrameCount++;
+			if (fpsElapsedTime >= 2)
+			{
+				simulation->setFPS(fpsFrameCount / fpsElapsedTime);
+				fpsFrameCount = 0;
+				fpsElapsedTime = 0;
+			}
+
+			// Handle Input
+			SDL_Event e;
+			while (SDL_PollEvent(&e) != 0)
+			{
+				switch (e.type)
+				{
+				case SDL_QUIT:
+					terminated = true;
+					break;
+				}
+
+				// Update Simulation
+				simulation->handle_event(e);
+			}		
+
+			glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+			simulation->render();
+
+			//Update screen
+			SDL_GL_SwapWindow(sdlWindow);
 		}
+	}
+	catch (const std::runtime_error &e)
+	{
+		std::string error_msg = std::string("Caught a fatal error: ") + std::string(e.what());
+		#if defined(_WIN32)
+			MessageBoxA(nullptr, error_msg.c_str(), NULL, MB_ICONERROR | MB_OK);
+		#else
+			std::cerr << error_msg << endl;
+		#endif
+	}
 
-		//Clear screen
-		SDL_SetRenderDrawColor(sdlRenderer, 0xFF, 0xFF, 0xFF, 0xFF);
-		SDL_RenderClear(sdlRenderer);
+	delete simulation;
 
-		// Let the gui perform it's logic (like handle input)
-		gui->logic();
-		// Draw the gui
-		gui->draw();
-
-		
-		// Update widgets
-		lblFPS->setCaption(std::format("FPS: %g", 1 / deltaTime));
-		lblFPS->adjustSize();
-
-		lblCurrentParticleCount->setCaption(std::format("Particle Count: %d", emitter.getParticleCount()));
-		lblCurrentParticleCount->adjustSize();
-
-		updateWidgets();
-
-		// Update Particles
-		if (particleTextureIndex != ddTexture->getSelected())
-		{
-			particleTextureIndex = ddTexture->getSelected();
-			particleTexture.Load(PARTICLE_TEXTURE_FILENAME[particleTextureIndex]);
-		}
-
-		// Update Emitter
-		emitter.setEnabled(chkEnabled->isSelected());
-		emitter.setMaxParticles((int)editMaxParticles->getValue());
-		emitter.setRate(editRate->getValue());
-		emitter.setLifeTime(editLifeTime->getValue());
-		emitter.setRadius(editRadius->getValue());
-		emitter.setAngle(editAngle->getValue());
-		emitter.setSpread(editSpread->getValue());
-		emitter.setMinSpeed(editMinSpeed->getValue());
-		emitter.setMaxSpeed(editMaxSpeed->getValue());
-		emitter.setGravity(editGravity->getValue());
-		emitter.setFade(chkFade->isSelected());
-
-		// Update Body
-		if (dragging)
-		{
-			int x, y;
-			SDL_GetMouseState(&x, &y);
-			if (x < 600)
-				body.position.x = x;
-			body.position.y = y;
-		}
-
-		// Render Canvas
-		SDL_Texture* texture = SDL_CreateTextureFromSurface(sdlRenderer, sdlCanvas);
-		SDL_RenderCopy(sdlRenderer, texture, 0, 0);
-		SDL_DestroyTexture(texture);
-
-		
-		// Render Body
-		body.update(deltaTime);
-
-        //Update render
-        SDL_RenderPresent(sdlRenderer);
-    }
-
-    //Free resources and close SDL
-
-    // Free GUI
-    delete font;
-    delete gui;
-
-	deleteWidgets();
-
-    delete input;
-    delete graphics;
-    delete imageLoader;  
+	nanogui::shutdown();
 
     //Destroy window	
-    SDL_DestroyRenderer(sdlRenderer);
     SDL_DestroyWindow(sdlWindow);
-    sdlWindow = NULL;
-    sdlRenderer = NULL;
 
     //Quit SDL subsystems
     IMG_Quit();
